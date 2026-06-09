@@ -1,0 +1,38 @@
+# Reusable FEATURE/PR workflow for CypherLite services.
+#
+# Called by a service's .github/workflows/feature-ci.yml on push / pull_request:
+#
+#   jobs:
+#     check:
+#       uses: cyphertrade-lite/workflows/.github/workflows/feature-ci.yml@master
+#       secrets: inherit
+#
+# Build + lint + test only — no image push, no deploy.
+name: feature-ci
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all
