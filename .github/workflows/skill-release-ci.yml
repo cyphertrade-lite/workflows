@@ -57,8 +57,11 @@ jobs:
     steps:
       - name: Configure git auth for private cargo deps
         run: |
-          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
-          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
+          git config --global credential.helper store
+          printf 'https://x-access-token:%s@github.com\n' "${{ secrets.CI_GITHUB_PAT }}" > "$HOME/.git-credentials"
+          chmod 600 "$HOME/.git-credentials"
+          # also route any ssh-style dep/submodule URLs through https+creds
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - uses: actions/checkout@v4
         with:
