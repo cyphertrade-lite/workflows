@@ -9,7 +9,8 @@
 #         service: wallet-service
 #       secrets: inherit
 #
-# Flow: build image -> push to GHCR -> SSH into the VM -> docker compose pull + up.
+# Flow: build image -> push to GHCR. Deploy is MANUAL (SSH into the VM and run
+# `docker compose pull <service> && docker compose up -d <service>`); CI does not deploy.
 name: skill-release-ci
 
 on:
@@ -19,27 +20,17 @@ on:
         description: "Service name (== GHCR image name and compose service name)"
         required: true
         type: string
-      compose_dir:
-        description: "Path to the compose project on the VM"
-        required: false
-        type: string
-        default: /root/cypherlite
-    secrets:
-      VM_SSH_KEY:
-        description: "Private SSH key for root@167.233.107.69"
-        required: true
-      # GHCR push uses the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
+    # GHCR push uses the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build-push-deploy:
+  build-push:
     runs-on: ubuntu-latest
     env:
       IMAGE: ghcr.io/cyphertrade-lite/${{ inputs.service }}
-      VM_HOST: 167.233.107.69
     steps:
       - uses: actions/checkout@v4
 
@@ -64,14 +55,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy to VM
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ env.VM_HOST }}
-          username: root
-          key: ${{ secrets.VM_SSH_KEY }}
-          script: |
-            cd ${{ inputs.compose_dir }}
-            docker compose pull ${{ inputs.service }}
-            docker compose up -d ${{ inputs.service }}
-            docker compose ps ${{ inputs.service }}
+      - name: Deploy reminder
+        run: |
+          echo "Image pushed: ${{ env.IMAGE }}:${{ github.ref_name }}"
+          echo "Deploy is manual: ssh root@167.233.107.69 'cd /root/cypherlite && docker compose pull ${{ inputs.service }} && docker compose up -d ${{ inputs.service }}'"

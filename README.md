@@ -4,8 +4,14 @@ Reusable GitHub Actions workflows for **CypherLite** services.
 
 | Workflow | When | What it does |
 |----------|------|--------------|
-| `skill-release-ci.yml` | on `gh release` | build image → push to `ghcr.io/cyphertrade-lite/<service>` → SSH into the VM → `docker compose pull && up -d` |
+| `skill-release-ci.yml` | on `gh release` | build image → push to `ghcr.io/cyphertrade-lite/<service>` (no deploy) |
 | `feature-ci.yml` | on push / PR | `cargo fmt --check`, `clippy -D warnings`, `cargo test` |
+
+**Deploy is manual.** CI only builds and pushes the image to GHCR. To deploy:
+
+```bash
+ssh root@167.233.107.69 'cd /root/cypherlite && docker compose pull <service> && docker compose up -d <service>'
+```
 
 ## Wiring a service
 
@@ -35,9 +41,7 @@ jobs:
     secrets: inherit
 ```
 
-## Required secrets
+## Secrets
 
-Set at the org level (or per service repo):
-
-- `VM_SSH_KEY` — private SSH key for `root@167.233.107.69`
+- **None required for deploy** — deploy is manual.
 - GHCR push uses the built-in `GITHUB_TOKEN` (`packages: write`); no extra secret needed.
