@@ -1,61 +1,119 @@
+name: Skill Release CI
+
 # Reusable RELEASE workflow for CypherLite services.
+#
+# Mirrors the cyphertrade org pattern: the application is built IN CI
+# (cargo build --release on the runner), then a SIMPLE Dockerfile just copies
+# the prebuilt binary in; the image is pushed to GHCR. There is NO cargo build
+# inside Docker.
+#
+# cyphertrade differences intentionally dropped here:
+#   - no Kubernetes (we run docker-compose on a single VM)
+#   - CI does NOT deploy — the VM deploy stays MANUAL
+#     (ssh root@167.233.107.69 'cd /root/cypherlite && docker compose pull <svc> && docker compose up -d <svc>')
+#   - self-hosted runners (cyphertrade-lite org, label `self-hosted`) reusing the
+#     cyphertrade Hetzner CI host, but GHCR + a CI_GITHUB_PAT secret instead of
+#     the private registry + Bitwarden secret manager
 #
 # Called by a service's .github/workflows/release-ci.yml on `gh release`:
 #
 #   jobs:
-#     release:
+#     build:
 #       uses: cyphertrade-lite/workflows/.github/workflows/skill-release-ci.yml@master
 #       with:
-#         service: wallet-service
+#         IMAGE_NAME: client-gateway
+#         UNITS: true
 #       secrets: inherit
-#
-# Flow: build image -> push to GHCR. Deploy is MANUAL (SSH into the VM and run
-# `docker compose pull <service> && docker compose up -d <service>`); CI does not deploy.
-name: skill-release-ci
 
 on:
   workflow_call:
     inputs:
-      service:
-        description: "Service name (== GHCR image name and compose service name)"
+      IMAGE_NAME:
+        description: "GHCR image name (== compose service name)"
         required: true
         type: string
-    # GHCR push uses the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
-
-permissions:
-  contents: read
-  packages: write
+      UNITS:
+        description: "Run `cargo test --release --all` before building"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CI_GITHUB_PAT:
+        description: "GitHub PAT with read access to private Rust deps (ITYFT/* + cyphertrade-lite/*) and submodules"
+        required: true
 
 jobs:
-  build-push:
-    runs-on: ubuntu-latest
+  build-and-push:
+    runs-on: self-hosted
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     env:
-      IMAGE: ghcr.io/cyphertrade-lite/${{ inputs.service }}
+      REGISTRY: ghcr.io
+      NAMESPACE: cyphertrade-lite
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
     steps:
+      - name: Configure git auth for private cargo deps
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
+
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CI_GITHUB_PAT }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Get the version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "CARGO_VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - name: Update version in Cargo.toml
+        run: sed -i -e 's/^version = .*/version = "'"${CARGO_VERSION}"'"/' Cargo.toml
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cyphertrade-lite-release
+          cache-all-crates: true
+
+      - name: Run unit tests
+        if: ${{ inputs.UNITS }}
+        run: cargo test --release --all
+
+      - name: Build (release)
+        run: cargo build --release
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Deploy reminder
+      - name: Docker build and push (binary copied in — no build in Docker)
         run: |
-          echo "Image pushed: ${{ env.IMAGE }}:${{ github.ref_name }}"
-          echo "Deploy is manual: ssh root@167.233.107.69 'cd /root/cypherlite && docker compose pull ${{ inputs.service }} && docker compose up -d ${{ inputs.service }}'"
+          IMAGE="${REGISTRY}/${NAMESPACE}/${{ inputs.IMAGE_NAME }}"
+          docker build \
+            --build-arg app_version="${VERSION}" \
+            --build-arg app_compilation_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+
+      - name: Deploy note (manual — CI does not deploy)
+        run: |
+          echo "Pushed ${REGISTRY}/${NAMESPACE}/${{ inputs.IMAGE_NAME }}:${VERSION} (+ :latest)"
+          echo "Deploy MANUALLY: ssh root@167.233.107.69 'cd /root/cypherlite && docker compose pull ${{ inputs.IMAGE_NAME }} && docker compose up -d ${{ inputs.IMAGE_NAME }}'"
