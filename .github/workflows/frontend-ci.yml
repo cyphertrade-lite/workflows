@@ -1,0 +1,78 @@
+name: Frontend CI (Web)
+
+# Reusable web-only CI for Expo frontends (PWA + Telegram Mini App).
+# Lint + typecheck + unit tests + static web export (expo export --platform web).
+# No native (iOS/Android) jobs.
+#
+# Called by a service's .github/workflows/frontend-ci.yml:
+#
+#   jobs:
+#     web:
+#       uses: cyphertrade-lite/workflows/.github/workflows/frontend-ci.yml@master
+#       with:
+#         NODE_VERSION: "22"
+
+on:
+  workflow_call:
+    inputs:
+      NODE_VERSION:
+        description: "Node.js version for setup-node"
+        required: false
+        type: string
+        default: "22"
+      BUILD_DIR:
+        description: "Static export output dir to upload"
+        required: false
+        type: string
+        default: "dist"
+      RUN_TESTS:
+        description: "Run `npm test`"
+        required: false
+        type: boolean
+        default: true
+      UPLOAD_ARTIFACT:
+        description: "Upload the web build as an artifact"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint · Typecheck · Test · Web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        if: ${{ inputs.RUN_TESTS }}
+        run: npm test -- --ci
+
+      - name: Build web (PWA + Telegram Mini App)
+        run: npm run web:build
+
+      - name: Upload web build
+        if: ${{ inputs.UPLOAD_ARTIFACT }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: ${{ inputs.BUILD_DIR }}
+          if-no-files-found: error
+          retention-days: 7
