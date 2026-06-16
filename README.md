@@ -7,6 +7,7 @@ Reusable GitHub Actions workflows for **CypherLite** services.
 | `skill-release-ci.yml` | on `gh release` | build image → push to `ghcr.io/cyphertrade-lite/<service>` (no deploy) |
 | `feature-ci.yml` | on push / PR | `cargo fmt --check`, `clippy -D warnings`, `cargo test` |
 | `frontend-ci.yml` | on push / PR | web-only Expo: `lint`, `tsc --noEmit`, `jest`, `expo export --platform web` (PWA + Telegram Mini App) |
+| `frontend-release-ci.yml` | on tag `v*` | `docker build` static web image → push to `ghcr.io/cyphertrade-lite/<service>` (no deploy) |
 
 **Deploy is manual.** CI only builds and pushes the image to GHCR. To deploy:
 
@@ -58,6 +59,26 @@ jobs:
       NODE_VERSION: "22"
     secrets: inherit
 ```
+
+`.github/workflows/release-ci.yml` (web frontends — build + push image on a version tag):
+
+```yaml
+name: release-ci
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  release:
+    uses: cyphertrade-lite/workflows/.github/workflows/frontend-release-ci.yml@master
+    with:
+      IMAGE_NAME: frontend-app
+    secrets: inherit
+```
+
+Cut a release by pushing a tag, e.g. `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## Secrets
 
