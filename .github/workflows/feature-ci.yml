@@ -51,8 +51,14 @@ jobs:
           # Rewriting the URL carries the credential in the request itself, so
           # nothing has to be looked up. `-----BEGIN` style secrets would be
           # unsafe here, a PAT is not: it is already a URL-safe token.
+          #
+          # ⚠️ `--add` ON THE SECOND. `url.<base>.insteadOf` is MULTI-VALUED and
+          # plain `git config` REPLACES rather than appends, so writing both
+          # lines without it silently keeps only the last — which is exactly how
+          # the first attempt at this fix still failed: the ssh form was
+          # rewritten and the https form, the one cargo actually uses, was not.
           git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
-          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
+          git config --global --add url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
 
       - uses: actions/checkout@v4
         with:
