@@ -59,10 +59,38 @@ jobs:
       # in CI on 2026-10-01 — `credential.helper store` FAILED and the same token
       # inline in the URL fetched the same private repo in the same shell.
       - name: Configure git auth for private cargo deps
+        env:
+          T: ${{ secrets.CI_GITHUB_PAT }}
         run: |
-          git config --global --unset-all http.https://github.com/.extraheader || true
-          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
-          git config --global --add url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
+          # ⚠️ THE RUNNER'S HOME IS PERSISTENT ACROSS JOBS. These are
+          # self-hosted containers, so ~/.gitconfig and ~/.git-credentials
+          # SURVIVE, and every run has been appending to them. Proved in CI on
+          # 2026-10-01: a plain `git config --global url.<...>.insteadOf` died
+          # with `error: cannot overwrite multiple values with a single value`
+          # (exit 5), and `ls` showed a ~/.git-credentials left by an earlier
+          # job that day.
+          #
+          # That is also why this looked like a dead token for hours. Each
+          # DISTINCT token makes its own `url.https://x-access-token:<token>@...`
+          # key, so a stale one keeps its own rewrite rule for
+          # `https://github.com/` and can win the match — authenticating every
+          # cargo fetch with an expired credential, which github answers
+          # `Repository not found`.
+          #
+          # So scrub first, then set exactly one rule. The job must not depend on
+          # what any previous job left behind.
+          git config --global --remove-section 'http.https://github.com/' 2>/dev/null || true
+          for k in $(git config --global --name-only --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true); do
+            git config --global --unset-all "$k" 2>/dev/null || true
+          done
+          git config --global --unset-all credential.helper 2>/dev/null || true
+          rm -f "$HOME/.git-credentials"
+
+          git config --global url."https://x-access-token:$T@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:$T@github.com/".insteadOf "git@github.com:"
+
+          echo "--- effective url rewrites, credentials masked ---"
+          git config --global --get-regexp '^url\.' | sed -E 's#(://[^:]*:)[^@]*@#\1***@#g'
 
       - uses: dtolnay/rust-toolchain@stable
         with:
