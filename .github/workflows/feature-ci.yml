@@ -37,6 +37,24 @@ jobs:
     timeout-minutes: 30
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # ⚠️ GIT'S CONFIG VIA THE ENVIRONMENT, NOT VIA ~/.gitconfig.
+      #
+      # These runners are long-lived containers whose HOME persists between
+      # jobs, so every file-based attempt competes with months of accumulated
+      # state — proved on 2026-10-01, when setting the rewrite rule died with
+      # `cannot overwrite multiple values with a single value` and a
+      # ~/.git-credentials from an earlier job that day was still sitting there.
+      # Scrubbing the file worked and the rules read back correctly, and cargo
+      # STILL could not fetch, so the file is not the only thing in play.
+      #
+      # GIT_CONFIG_COUNT outranks every config file, is inherited by every
+      # subprocess cargo spawns, and leaves NOTHING on the machine for the next
+      # job to trip over. A job should not be able to poison the next one.
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/.insteadOf"
+      GIT_CONFIG_VALUE_0: "https://github.com/"
+      GIT_CONFIG_KEY_1: "url.https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/.insteadOf"
+      GIT_CONFIG_VALUE_1: "git@github.com:"
     steps:
       - uses: actions/checkout@v4
         with:
