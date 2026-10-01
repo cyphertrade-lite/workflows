@@ -55,32 +55,31 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
     steps:
-      - name: Configure git auth for private cargo deps
-        run: |
-          # ⚠️ url.insteadOf, NOT the credential store. The store stopped
-          # supplying the credential on these runners: proved inside CI on
-          # 2026-10-01 with a 40-character, whitespace-free `ghp_` secret —
-          # `git ls-remote` through `credential.helper store` answered
-          # "Repository not found" while the SAME token inline in the URL
-          # fetched the same private repo in the same shell, same step, same
-          # HOME. The token was never the problem; the lookup was.
-          #
-          # Rewriting the URL carries the credential in the request itself, so
-          # nothing has to be looked up. `-----BEGIN` style secrets would be
-          # unsafe here, a PAT is not: it is already a URL-safe token.
-          #
-          # ⚠️ `--add` ON THE SECOND. `url.<base>.insteadOf` is MULTI-VALUED and
-          # plain `git config` REPLACES rather than appends, so writing both
-          # lines without it silently keeps only the last — which is exactly how
-          # the first attempt at this fix still failed: the ssh form was
-          # rewritten and the https form, the one cargo actually uses, was not.
-          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
-          git config --global --add url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
-
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           token: ${{ secrets.CI_GITHUB_PAT }}
+
+      # ⚠️ AFTER checkout, NOT before, and this ordering is the whole fix.
+      #
+      # `actions/checkout` ends by writing a GLOBAL
+      # `http.https://github.com/.extraheader AUTHORIZATION: basic ...` and by
+      # running `--unset-all url.https://github.com/.insteadOf`. Anything this
+      # step does first is therefore either wiped or left competing with that
+      # header, and a request carrying both a header and URL userinfo is what
+      # github answered `Repository not found` to all morning — while checkout's
+      # own fetches, including the private `proto` submodule, succeeded on the
+      # same token in the same job.
+      #
+      # So: drop checkout's global header (its own work is done by now, and the
+      # local one it set on this repo is untouched), then rewrite the URL. Proved
+      # in CI on 2026-10-01 — `credential.helper store` FAILED and the same token
+      # inline in the URL fetched the same private repo in the same shell.
+      - name: Configure git auth for private cargo deps
+        run: |
+          git config --global --unset-all http.https://github.com/.extraheader || true
+          git config --global url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "https://github.com/"
+          git config --global --add url."https://x-access-token:${{ secrets.CI_GITHUB_PAT }}@github.com/".insteadOf "git@github.com:"
 
       - uses: dtolnay/rust-toolchain@stable
 
