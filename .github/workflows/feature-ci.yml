@@ -97,7 +97,19 @@ jobs:
           #
           # So scrub first, then set exactly one rule. The job must not depend on
           # what any previous job left behind.
-          git config --global --remove-section 'http.https://github.com/' 2>/dev/null || true
+          # ⚠️ --unset-all ON THE KEY, not --remove-section on the section.
+          # The section form was tried first and did NOT remove the header;
+          # `--unset-all` on the exact key did, proved on a clean hosted runner
+          # on 2026-10-01 where the fetch went from `Repository not found` to
+          # `FETCH=ok` in the same step.
+          #
+          # THIS HEADER IS THE WHOLE BUG. `actions/checkout` leaves a GLOBAL
+          # `http.https://github.com/.extraheader AUTHORIZATION: basic ...`
+          # behind, so every later fetch carries BOTH that header and the
+          # credential in the rewritten URL — and github answers a request with
+          # two credentials `Repository not found`. That is why the one isolated
+          # job that ever succeeded was the one with no checkout in it.
+          git config --global --unset-all http.https://github.com/.extraheader || true
           for k in $(git config --global --name-only --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true); do
             git config --global --unset-all "$k" 2>/dev/null || true
           done
