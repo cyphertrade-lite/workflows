@@ -166,12 +166,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A FAILED QUESTION IS NOT A "NO". The detection below decides whether 78
+          # tests run, so it must not read "cargo broke" as "this service has no
+          # db-tests". The shared runners drop cargo off PATH intermittently (the
+          # cargo-cache collision: `cargo: command not found`, exit 127, clean rerun
+          # passes), and on the first version of this step that landed in the "no
+          # feature" branch and quietly ran the plain suite — reintroducing the silent
+          # skip this whole change exists to remove. So cargo is checked explicitly
+          # and a broken query is a hard failure, never a quiet one.
+          if ! command -v cargo >/dev/null 2>&1; then
+            echo "::error::cargo is not on PATH — shared-runner cache collision, not a"
+            echo "::error::fact about this service. Re-run; do not read this as 'no db-tests'."
+            exit 127
+          fi
+
           # Ask cargo, not a grep of Cargo.toml: `--no-deps` lists only workspace
           # packages, so a match means THIS service declares the feature rather than
           # some dependency of it. Only two of the dozen services do, and passing the
           # flag to one that does not is a hard error ("none of the selected packages
           # contains these features"), which would break the other ten.
-          if ! cargo metadata --no-deps --format-version 1 | grep -q '"db-tests"'; then
+          meta=$(cargo metadata --no-deps --format-version 1) || {
+            echo "::error::cargo metadata failed; cannot tell whether db-tests exist"
+            exit 1
+          }
+          if ! printf '%s' "$meta" | grep -q '"db-tests"'; then
             echo "No db-tests feature in this workspace — running the plain suite."
             cargo test --all
             exit 0
