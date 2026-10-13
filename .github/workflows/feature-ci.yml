@@ -141,62 +141,73 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      # ─── TEMPORARY DIAGNOSTIC (SKILLTRADE-923, probe branch only) ───
-      # Round 2. Round 1 established: the job runs INSIDE a container, the host
-      # docker socket is mounted, `docker run` works, nothing listens on 5432, and
-      # pg_isready/psql are absent. So containers started here are SIBLINGS on the
-      # host — a published port would land on the host, not in this namespace, and
-      # two concurrent jobs would fight over it.
+      # One Test step, not two: with the feature on, `cargo test --all --features
+      # db-tests` runs the plain tests as well, so a separate step would compile and
+      # run the whole suite twice.
       #
-      # The candidate this round tests: attach postgres to THIS job container's own
-      # network namespace (`--network container:$(hostname)`). If that works,
-      # postgres is on 127.0.0.1:5432 from the job's point of view, every job gets
-      # its own namespace, and the shared runners cannot collide on a port.
+      # WHY A POSTGRES AT ALL (SKILLTRADE-923). The `db-tests` feature gates
+      # `#[sqlx::test]` integration tests, and without a database they were not
+      # skipped — they were never built into a test binary at all. Clippy runs
+      # `--all-features`, so they were TYPE-CHECKED and looked wired; `cargo test`
+      # ran without the feature, so not one of them had ever executed. Measured
+      # 2026-10-13: 66 such tests in admin-gateway and 12 in contest-service, 78
+      # that had never run on any branch. A green run meant they compiled.
       #
-      # Round 1's probe had a real flaw, fixed here: it suppressed cargo's stderr,
-      # so a missing cargo read as "db-tests not declared". A probe that cannot tell
-      # "no" from "could not ask" is worthless. Nothing is inferred now.
-      - name: PROBE - can a sibling postgres be reached on this namespace?
-        continue-on-error: true
+      # WHY `--network container:` AND NOT `services:` OR `-p 5432:5432`. Measured on
+      # these runners, not assumed: the job runs INSIDE a container with the host's
+      # docker socket mounted, so anything started here is a SIBLING on the host. A
+      # published port would land on the host rather than in this job's namespace,
+      # and two jobs on the shared runners would then fight over 5432. Attaching
+      # postgres to the job container's OWN namespace puts it on 127.0.0.1 for this
+      # job only, so jobs cannot collide by construction. `pg_isready` and `psql` are
+      # not installed in the job, which is why readiness is a /dev/tcp poll.
+      - name: Test
+        if: ${{ inputs.UNITS }}
         run: |
-          echo "--- is cargo even here? (round 1 could not tell) ---"
-          if command -v cargo >/dev/null 2>&1; then
-            echo "cargo: $(command -v cargo)"
-            echo "db-tests declared:"
-            cargo metadata --no-deps --format-version 1 2>&1 | grep -q '\"db-tests\"' \
-              && echo "  YES" || echo "  no (and cargo DID answer)"
-          else
-            echo "cargo: NOT ON PATH — this is the known shared-runner cache collision,"
-            echo "       not a fact about the service. Nothing below is inferred from it."
+          set -euo pipefail
+
+          # Ask cargo, not a grep of Cargo.toml: `--no-deps` lists only workspace
+          # packages, so a match means THIS service declares the feature rather than
+          # some dependency of it. Only two of the dozen services do, and passing the
+          # flag to one that does not is a hard error ("none of the selected packages
+          # contains these features"), which would break the other ten.
+          if ! cargo metadata --no-deps --format-version 1 | grep -q '"db-tests"'; then
+            echo "No db-tests feature in this workspace — running the plain suite."
+            cargo test --all
+            exit 0
           fi
-          echo "--- start postgres in THIS container's network namespace ---"
-          PG=ci-pg-$GITHUB_RUN_ID
+
+          PG="ci-pg-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Removed even when the tests fail or the job is cancelled; a leaked
+          # container would hold the namespace's port against the next job.
+          trap 'docker rm -f "$PG" >/dev/null 2>&1 || true' EXIT
           docker rm -f "$PG" >/dev/null 2>&1 || true
-          if docker run -d --name "$PG" --network container:$(hostname) \
-               -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres \
-               -e POSTGRES_DB=postgres postgres:16-alpine >/dev/null 2>&1; then
-            echo "docker run: started"
-          else
-            echo "docker run: FAILED to start"
-            docker run -d --name "$PG" --network container:$(hostname) \
-              -e POSTGRES_PASSWORD=postgres postgres:16-alpine 2>&1 | head -5 || true
-          fi
-          echo "--- wait for it on 127.0.0.1:5432 (no pg_isready here, so /dev/tcp) ---"
+
+          echo "Starting postgres in this job container's network namespace."
+          docker run -d --name "$PG" \
+            --network "container:$(hostname)" \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=postgres \
+            postgres:16-alpine >/dev/null
+
+          # Fails loudly rather than skipping. A silent skip is the defect this step
+          # exists to remove, so never trade a red step for a quiet one.
           ready=no
-          for i in $(seq 1 30); do
-            if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/5432" 2>/dev/null; then
-              ready=yes; echo "  port open after ${i}s"; break
+          for _ in $(seq 1 60); do
+            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5432' 2>/dev/null; then
+              ready=yes; break
             fi
             sleep 1
           done
-          echo "postgres reachable at 127.0.0.1:5432: $ready"
-          echo "--- can it actually serve a query? (psql from inside the container) ---"
-          docker exec "$PG" psql -U postgres -tAc "select 'SELECT_WORKS', version()" 2>&1 | head -2 || true
-          echo "--- can it CREATE DATABASE, which #[sqlx::test] needs per test? ---"
-          docker exec "$PG" psql -U postgres -tAc "create database probe_t; drop database probe_t; select 'CREATE_DROP_WORKS'" 2>&1 | head -3 || true
-          echo "--- cleanup ---"
-          docker rm -f "$PG" >/dev/null 2>&1 && echo "removed" || echo "NOT removed"
+          if [ "$ready" != yes ]; then
+            echo "::error::postgres never came up on 127.0.0.1:5432; db-tests cannot run"
+            docker logs "$PG" 2>&1 | tail -30 || true
+            exit 1
+          fi
+          echo "postgres is up."
 
-      - name: Test
-        if: ${{ inputs.UNITS }}
-        run: cargo test --all
+          # `#[sqlx::test]` creates and drops an ephemeral database PER TEST from this
+          # URL, so the role must be able to CREATE DATABASE — the default superuser is.
+          export DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/postgres"
+          cargo test --all --features db-tests
