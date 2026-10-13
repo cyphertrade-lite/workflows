@@ -141,6 +141,53 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # ─── TEMPORARY DIAGNOSTIC (SKILLTRADE-923, probe branch only) ───
+      # Establishes what this runner can actually host BEFORE a postgres goes into
+      # a workflow every service shares. No workflow in this org uses `services:`
+      # today and the runners are themselves containers, so whether service
+      # containers work — and at which address — cannot be settled by reading.
+      # Never fails the job: it only reports. Deleted before anything reaches master.
+      - name: PROBE - what can this runner host?
+        continue-on-error: true
+        run: |
+          echo "--- identity ---"
+          id || true
+          echo "hostname: $(hostname)"
+          if [ -f /.dockerenv ]; then echo "in a container: yes"; else echo "in a container: no"; fi
+          echo "--- docker available to the job? ---"
+          if command -v docker >/dev/null 2>&1; then
+            echo "docker binary: yes"
+            docker version --format '{{.Server.Version}}' 2>&1 | head -1 || true
+          else
+            echo "docker binary: NO"
+          fi
+          ls -l /var/run/docker.sock 2>&1 | head -1 || true
+          echo "--- can it actually run a container? ---"
+          if docker run --rm hello-world >/dev/null 2>&1; then
+            echo "docker run: WORKS"
+          else
+            echo "docker run: FAILS"
+          fi
+          echo "--- is a postgres already reachable? ---"
+          for hp in 127.0.0.1:5432 localhost:5432 postgres:5432; do
+            h=${hp%%:*}; pt=${hp##*:}
+            if timeout 3 bash -c "exec 3<>/dev/tcp/$h/$pt" 2>/dev/null; then
+              echo "  $hp OPEN"
+            else
+              echo "  $hp closed"
+            fi
+          done
+          echo "--- tooling the real step would need ---"
+          for t in pg_isready psql python3 timeout; do
+            if command -v $t >/dev/null 2>&1; then echo "  $t: yes"; else echo "  $t: NO"; fi
+          done
+          echo "--- does THIS service declare the db-tests feature? ---"
+          if cargo metadata --no-deps --format-version 1 2>/dev/null | grep -q '"db-tests"'; then
+            echo "db-tests declared: YES"
+          else
+            echo "db-tests declared: no"
+          fi
+
       - name: Test
         if: ${{ inputs.UNITS }}
         run: cargo test --all
