@@ -142,6 +142,8 @@ jobs:
         with:
           shared-key: cyphertrade-lite-release
           cache-all-crates: true
+          # Preserve toolchain binaries in the persistent Cargo home shared by runners.
+          cache-bin: "false"
 
       - name: Run unit tests
         if: ${{ inputs.UNITS }}

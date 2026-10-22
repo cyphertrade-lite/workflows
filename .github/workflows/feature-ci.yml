@@ -134,6 +134,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cyphertrade-lite-feature
+          # Preserve toolchain binaries in the persistent Cargo home shared by runners.
+          cache-bin: "false"
 
       - name: Format
         run: cargo fmt --all --check
