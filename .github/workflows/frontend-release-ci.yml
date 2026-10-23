@@ -55,7 +55,12 @@ jobs:
           IMAGE="${REGISTRY}/${NAMESPACE}/${{ inputs.IMAGE_NAME }}"
           # Label links the GHCR package to the source repo even when the image
           # name (IMAGE_NAME) differs from the repo name.
+          # GIT_SHA / APP_VERSION let an image stamp its build into the bundle
+          # (skill-mobile-app maps them to EXPO_PUBLIC_*); repos whose
+          # Dockerfile has no matching ARG just ignore them.
           docker build \
+            --build-arg "GIT_SHA=${GITHUB_SHA}" \
+            --build-arg "APP_VERSION=${VERSION}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${IMAGE}:${VERSION}" \
