@@ -161,8 +161,19 @@ jobs:
       # published port would land on the host rather than in this job's namespace,
       # and two jobs on the shared runners would then fight over 5432. Attaching
       # postgres to the job container's OWN namespace puts it on 127.0.0.1 for this
-      # job only, so jobs cannot collide by construction. `pg_isready` and `psql` are
-      # not installed in the job, which is why readiness is a /dev/tcp poll.
+      # job only, so jobs cannot collide by construction.
+      #
+      # SINCE 2026-11-10 THE RUNNERS ARE DIFFERENT (ITYFT/ci-runners, pool `lite`):
+      # each job runs in a fresh Sysbox container with its OWN inner docker engine.
+      # The job's hostname is not a container in that engine, so
+      # `--network container:$(hostname)` died with "No such container", exit 125
+      # (contest-service#82, run 43027372905). On a per-job engine nothing else
+      # shares the port, so publishing 127.0.0.1:5432 is collision-free there. The
+      # step asks the engine which case it is in rather than assuming either.
+      #
+      # Readiness is `pg_isready -h 127.0.0.1` INSIDE the postgres container, not a
+      # TCP poll from the job: a published port is accepted by docker-proxy before
+      # postgres listens, so a TCP connect would report "up" too early.
       - name: Test
         if: ${{ inputs.UNITS }}
         run: |
@@ -203,9 +214,17 @@ jobs:
           trap 'docker rm -f "$PG" >/dev/null 2>&1 || true' EXIT
           docker rm -f "$PG" >/dev/null 2>&1 || true
 
-          echo "Starting postgres in this job container's network namespace."
+          if docker inspect "$(hostname)" >/dev/null 2>&1; then
+            # Sibling on a shared host engine: join this job container's namespace.
+            echo "Starting postgres in this job container's network namespace."
+            net=(--network "container:$(hostname)")
+          else
+            # Per-job engine (Sysbox): nobody else uses this engine's ports.
+            echo "Job container not in this docker engine (per-job engine); publishing 127.0.0.1:5432."
+            net=(-p 127.0.0.1:5432:5432)
+          fi
           docker run -d --name "$PG" \
-            --network "container:$(hostname)" \
+            "${net[@]}" \
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD=postgres \
             -e POSTGRES_DB=postgres \
@@ -215,7 +234,8 @@ jobs:
           # exists to remove, so never trade a red step for a quiet one.
           ready=no
           for _ in $(seq 1 60); do
-            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5432' 2>/dev/null; then
+            if docker exec "$PG" pg_isready -q -h 127.0.0.1 -p 5432 -U postgres 2>/dev/null \
+               && timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/5432' 2>/dev/null; then
               ready=yes; break
             fi
             sleep 1
